@@ -4,7 +4,8 @@ from flask import Response
 from flask import _request_ctx_stack as stack
 from flask import make_response
 from flask import request
-from functools import wraps
+from functools import partial, wraps
+from inspect import getargspec
 from socket import gethostname
 from os import environ
 
@@ -51,7 +52,7 @@ def _forbidden():
     return Response('Forbidden', 403)
 
 
-def _gssapi_authenticate(token):
+def _gssapi_authenticate(token, delegate=False):
     '''
     Performs GSSAPI Negotiate Authentication
 
@@ -60,6 +61,7 @@ def _gssapi_authenticate(token):
     authenticated user principal with the name kerberos_user.
 
     @param token: GSSAPI Authentication Token
+    @param delegate: whether the context is to be used for accepting delegated credentials
     @type token: str
     @returns gssapi return code or None on failure
     @rtype: int or None
@@ -67,11 +69,15 @@ def _gssapi_authenticate(token):
     state = None
     ctx = stack.top
     try:
-        rc, state = kerberos.authGSSServerInit(_SERVICE_NAME)
+        service_name = _SERVICE_NAME
+        if delegate:
+            service_name = "DELEGATE"
+        rc, state = kerberos.authGSSServerInit(service_name)
         if rc != kerberos.AUTH_GSS_COMPLETE:
             return None
         rc = kerberos.authGSSServerStep(state, token)
         if rc == kerberos.AUTH_GSS_COMPLETE:
+            ctx.kerberos_context = state
             ctx.kerberos_token = kerberos.authGSSServerResponse(state)
             ctx.kerberos_user = kerberos.authGSSServerUserName(state)
             return rc
@@ -86,26 +92,32 @@ def _gssapi_authenticate(token):
             kerberos.authGSSServerClean(state)
 
 
-def requires_authentication(function):
+def requires_authentication(function=None, delegate=False):
     '''
     Require that the wrapped view function only be called by users
     authenticated with Kerberos. The view function will have the authenticated
     users principal passed to it as its first argument.
 
     :param function: flask view function
+    :param delegate: whether the context is to be used for accepting delegated credentials
     :type function: function
     :returns: decorated function
     :rtype: function
     '''
+    if function is None:
+        return partial(requires_authentication, delegate=delegate)
     @wraps(function)
     def decorated(*args, **kwargs):
         header = request.headers.get("Authorization")
         if header:
             ctx = stack.top
             token = ''.join(header.split()[1:])
-            rc = _gssapi_authenticate(token)
+            rc = _gssapi_authenticate(token, delegate)
             if rc == kerberos.AUTH_GSS_COMPLETE:
-                response = function(ctx.kerberos_user, *args, **kwargs)
+                args_list = (ctx.kerberos_user, ctx.kerberos_context)
+                num_args = len(getargspec(function).args)
+                args = args_list[:num_args]
+                response = function(*args, **kwargs)
                 response = make_response(response)
                 if ctx.kerberos_token is not None:
                     response.headers['WWW-Authenticate'] = ' '.join(['negotiate',

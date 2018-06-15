@@ -41,6 +41,15 @@ principal as their first argument::
     def protected_view(user):
         ...
 
+Kerberos delegation is also supported, and the context with delegated credentials
+can be passed into the view function for use with subsequent functions::
+
+    from flask_kerberos import requires_authentication
+
+    @app.route("/protected")
+    @requires_authentication(delegate=True)
+    def protected_view(user, context):
+        ...
 
 Flask-Kerberos assumes that the service will be running using the hostname of
 the host on which the application is run. If this is not the case, you can

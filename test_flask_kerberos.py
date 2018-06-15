@@ -15,6 +15,11 @@ class BasicAppTestCase(unittest.TestCase):
         def index(user):
             return user
 
+        @app.route('/test_delegation')
+        @flask_kerberos.requires_authentication(delegate=True)
+        def test_delegation(user, context):
+            return context
+
         self.app = app
 
     def test_unauthorized(self):
@@ -106,6 +111,34 @@ class BasicAppTestCase(unittest.TestCase):
         self.assertEqual(step.mock_calls, [mock.call(state, 'CTOKEN')])
         self.assertEqual(name.mock_calls, [])
         self.assertEqual(response.mock_calls, [])
+        self.assertEqual(clean.mock_calls, [mock.call(state)])
+
+    @mock.patch('kerberos.authGSSServerInit')
+    @mock.patch('kerberos.authGSSServerStep')
+    @mock.patch('kerberos.authGSSServerResponse')
+    @mock.patch('kerberos.authGSSServerUserName')
+    @mock.patch('kerberos.authGSSServerClean')
+    def test_delegation(self, clean, name, response, step, init):
+        '''
+        Ensure that when the client sends a correct authorization token for delegation,
+        they receive a 200 OK response and the context with delegated credentials
+        is extracted and passed on to the routed method.
+        '''
+        state = "CONTEXT"
+        init.return_value = (kerberos.AUTH_GSS_COMPLETE, state)
+        step.return_value = kerberos.AUTH_GSS_COMPLETE
+        name.return_value = "user@EXAMPLE.ORG"
+        response.return_value = "STOKEN"
+        flask_kerberos.init_kerberos(self.app, 'HTTP', 'example.org')
+        c = self.app.test_client()
+        r = c.get('/test_delegation', headers={'Authorization': 'Negotiate CTOKEN'})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data, state)
+        self.assertEqual(r.headers.get('WWW-Authenticate'), 'negotiate STOKEN')
+        self.assertEqual(init.mock_calls, [mock.call('DELEGATE')])
+        self.assertEqual(step.mock_calls, [mock.call(state, 'CTOKEN')])
+        self.assertEqual(name.mock_calls, [mock.call(state)])
+        self.assertEqual(response.mock_calls, [mock.call(state)])
         self.assertEqual(clean.mock_calls, [mock.call(state)])
 
 
